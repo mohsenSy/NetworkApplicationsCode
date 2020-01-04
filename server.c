@@ -3,8 +3,35 @@
 #include <unistd.h> // read, write, close
 #include <arpa/inet.h> // sockaddr_in, AF_INET, SOCK_STREAM, INADDR_ANY, socket etc...
 #include <string.h> // memset
+#include "file.h"
 
-#define BUF_SIZE 1024
+#include <pthread.h>
+
+void* process_client(void* v) {
+  int clientSocket = *((int *)v);
+  char buffer[1024];
+  memset(buffer, 0, sizeof(buffer));
+  if (read(clientSocket, buffer, sizeof(buffer)) < 0) {
+    perror("read() failed");
+    return NULL;
+  }
+  printf("read client request\n");
+  struct message rq;
+  struct message rs;
+  deserialize_message(&rq, buffer);
+  process_message(&rq, &rs);
+  printf("process_message\n");
+  int s = 0;
+  char *res = serialize_message(&rs, &s);
+  printf("message serialized\n");
+  //print_message(&rs);
+
+  if (write(clientSocket, res, s) < 0) {
+    perror("write() failed");
+    return NULL;
+  }
+  free(v);
+}
 
 int main(int argc, char const *argv[]) {
 
@@ -13,49 +40,42 @@ int main(int argc, char const *argv[]) {
     exit(1);
   }
 
-  int serverFd = socket(AF_INET, SOCK_STREAM, 0);
-  if (serverFd < 0) {
+  int serverSocket, clientSocket;
+  struct sockaddr_in serverAddr, clientAddr;
+  int clientAddrLen = sizeof(clientAddr);
+  char buffer[1024];
+
+  if ((serverSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
     perror("socket() failed");
-    exit(2);
+    exit(1);
   }
-  struct sockaddr_in serverAddr;
   memset(&serverAddr, 0, sizeof(serverAddr));
   serverAddr.sin_family = AF_INET;
   serverAddr.sin_port = htons(atoi(argv[1]));
   serverAddr.sin_addr.s_addr = INADDR_ANY;
-  if (bind(serverFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+  if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
     perror("bind() failed");
-    exit(9);
+    exit(1);
   }
-  if (listen(serverFd, 10) < 0) {
+  if (listen(serverSocket, 10) < 0) {
     perror("listen() failed");
-    exit(3);
+    exit(1);
   }
-  struct sockaddr_in clientAddr;
-  int addrLen = sizeof(clientAddr);
-  char buf[BUF_SIZE];
   while(1) {
-    int clientFd = accept(serverFd, (struct sockaddr *)&clientAddr, &addrLen);
-    if (clientFd < 0) {
+    clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddr, &clientAddrLen);
+    if (clientSocket < 0) {
       perror("accept() failed");
       continue;
     }
-    memset(buf, 0, BUF_SIZE);
-    if(read(clientFd, buf, BUF_SIZE) < 0) {
-      perror("read() failed");
-      close(clientFd);
+    pthread_t th;
+    int *socket = malloc(4);
+    *socket = clientSocket;
+    if (pthread_create(&th, NULL, process_client, (void *)socket) < 0) {
+      perror("thread create failed");
       continue;
     }
-    printf("From client %s\n", buf);
-    char send_buffer[BUF_SIZE];
-    sprintf(send_buffer, "client sent %s", buf);
-    if (write(clientFd, send_buffer, strlen(send_buffer)) < 0) {
-      perror("write() failed");
-      close(clientFd);
-      continue;
-    }
-    close(clientFd);
   }
+  close(serverSocket);
 
   return 0;
 }
